@@ -2,8 +2,16 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+from task_engine.db import init_db, save_task, load_task
+from contextlib import asynccontextmanager
 
 # data model
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    init_db()
+    yield
+    # Shutdown (nothing needed yet)
 
 class Task:
     def __init__(self, task_id: str):
@@ -14,7 +22,7 @@ class Task:
 
 # In memory store -  not using database yet!
 
-TASK_STORE = {}
+# TASK_STORE = {}
 
 
 #Lifecycle rules - important!!!
@@ -52,7 +60,7 @@ class TaskActionResponse(BaseModel):
 
 # FASTAPI app
 
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -65,24 +73,24 @@ app.add_middleware(
 
 @app.post("/tasks/{task_id}")
 def create_task(task_id: str):
-    if task_id in TASK_STORE:
-        raise HTTPException(status_code=400, detail="task is already exists!")
-
+    existing = load_task(task_id)
+    if existing:
+        raise HTTPException(status_code=400, detail="task already exists")
     task = Task(task_id)
-    TASK_STORE[task_id] = task
+    save_task(task)
 
     return{
-        "task_id":task.id,
-        "state":task.state
+        "task_id": task_id,
+        "state": task.state
+
     }
 
 @app.post("/tasks/{task_id}/actions",response_model=TaskActionResponse)
 def apply_task_action(task_id: str, action: TaskActionRequest):
-    if task_id not in TASK_STORE:
-        raise HTTPException(status_code=404, detail=f"task with {task_id} does not exists")
+    task = load_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
     
-
-    task = TASK_STORE[task_id]
     current_state = task.state
 
     allowed_actions = STATE_TRANSITIONS.get(current_state,{})
@@ -95,6 +103,7 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
     new_state = allowed_actions[action.requested_action]
     task.state = new_state
     task.state_changed_at = datetime.now()
+    save_task(task)
     next_allowed_actions = list(
         STATE_TRANSITIONS.get(task.state,{}).keys()
     )
@@ -109,10 +118,9 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
 
 @app.get("/tasks/{task_id}")
 def get_task(task_id: str):
-    if task_id not in TASK_STORE:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task = TASK_STORE[task_id]
+    task = load_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
 
     return {
         "task_id": task.id,
@@ -123,3 +131,4 @@ def get_task(task_id: str):
             STATE_TRANSITIONS.get(task.state,{}).keys()
         )
     }
+
