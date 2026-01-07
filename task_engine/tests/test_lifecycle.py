@@ -18,18 +18,25 @@ def isolated_db(tmp_path, monkeypatch):
 def test_cannot_skip_lc():
 
     with pytest.raises(Exception):
-        apply_task_action("1",TaskActionRequest(requested_action="start_progress"))
+        apply_task_action("101",TaskActionRequest(requested_action="start_progress", actor_id="USER"))
 
 def test_completed_task_is_immutable():
-    task = Task("2")
+    task = Task("101")
     save_task(task)
     # TASK_STORE["2"] = task
 
     # Move task through valid lifecycle
-    apply_task_action("2", TaskActionRequest(requested_action="submit_for_review"))
-    apply_task_action("2", TaskActionRequest(requested_action="start_progress"))
-    apply_task_action("2", TaskActionRequest(requested_action="complete_task"))
+    apply_task_action("101", TaskActionRequest(requested_action="submit_for_review", actor_id="USER"))
+    apply_task_action("101", TaskActionRequest(requested_action="start_progress", actor_id="USER"))
+    apply_task_action("101", TaskActionRequest(requested_action="complete_task", actor_id="USER"))
     
     # Attempt any further action (should fail)
     with pytest.raises(HTTPException):
-        apply_task_action("2", TaskActionRequest(requested_action="start_progress"))
+        apply_task_action("101", TaskActionRequest(requested_action="start_progress", actor_id="USER"))
+
+def test_user_cannot_archive():
+    task = Task("101")
+    save_task(task)
+
+    with pytest.raises(HTTPException):
+        apply_task_action("101",TaskActionRequest(requested_action="archive_task", actor_id="USER"))

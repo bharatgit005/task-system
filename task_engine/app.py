@@ -4,6 +4,9 @@ from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from task_engine.db import init_db, save_task, load_task
 from contextlib import asynccontextmanager
+from task_engine.capability_resolver import resolve_capabilities
+from task_engine.auth import ACTION_CAPABILITIES
+
 
 # data model
 @asynccontextmanager
@@ -45,11 +48,17 @@ STATE_TRANSITIONS = {
     "ARCHIVED":{}
 
 }
-
+ACTION_PERMISSIONS = {
+    "submit_for_review": "USER",
+    "start_progress": "USER",
+    "complete_task": "USER",
+    "archive_task": "SYSTEM",
+}
 #API contracts
 
 class TaskActionRequest(BaseModel):
     requested_action: str
+    actor_id: str
 
 class TaskActionResponse(BaseModel):
     task_id: str
@@ -92,11 +101,16 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
         raise HTTPException(status_code=404, detail="task not found")
     
     current_state = task.state
+    #auth logic
+    actor_capabilities = resolve_capabilities(action.actor_id)
+    required_capability = ACTION_CAPABILITIES.get(action.requested_action)
 
+    if required_capability:
+        if required_capability not in actor_capabilities:
+            raise HTTPException(status_code=403, detail="actor lack of required capability")
+    
+    #lifecycle logic
     allowed_actions = STATE_TRANSITIONS.get(current_state,{})
-
-
-
     if action.requested_action not in allowed_actions:
         raise HTTPException(status_code=400, detail=f"Action {action.requested_action} not allowed from state {current_state}")
     
