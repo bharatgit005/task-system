@@ -40,3 +40,30 @@ def test_user_cannot_archive():
 
     with pytest.raises(HTTPException):
         apply_task_action("101",TaskActionRequest(requested_action="archive_task", actor_id="USER"))
+
+#nagetive testing
+def test_unknown_actor_has_no_power():
+    task = Task("200")
+    save_task(task)
+
+    with pytest.raises(HTTPException):
+        apply_task_action(
+            "200",
+            TaskActionRequest(
+                requested_action="submit_for_review",
+                actor_id="unknown_actor"
+            )
+        )
+
+def test_unknown_action_is_rejected():
+    task = Task("201")
+    save_task(task)
+
+    with pytest.raises(HTTPException):
+        apply_task_action(
+            "201",
+            TaskActionRequest(
+                requested_action="delete_everything",
+                actor_id="system"
+            )
+        )
