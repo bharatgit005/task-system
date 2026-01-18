@@ -1,4 +1,4 @@
-from task_engine.app import apply_task_action, TaskActionRequest, get_task_projection
+from task_engine.app import apply_task_action, TaskActionRequest, get_task_projection, CreateTaskRequest, create_task as create_task_endpoint
 from task_engine.domain import Task
 import pytest
 from fastapi import HTTPException
@@ -19,22 +19,10 @@ def isolated_db(tmp_path, monkeypatch):
 
 #helper function
 def create_task(task_id: str):
-    now = datetime.utcnow().isoformat()
-    append_event(
-        stream_id=task_id,
-        stream_type="TASK",
-        expected_version=0,
-        event_type="TaskCreated",
-        payload={
-            "state": "CREATED",
-            "created_at": now
-        },
-        metadata={
-            "actor": "system"
-        },
-        idempotency_key=f"create-{task_id}-{uuid.uuid4()}",
-        correlation_id=f"create-{task_id}"
+    req = CreateTaskRequest(
+        idempotency_key=f"create-{task_id}-{uuid.uuid4()}"
     )
+    create_task_endpoint(task_id, req)
 
 def cmd(action: str, actor: str):
     return TaskActionRequest(
@@ -181,3 +169,11 @@ def test_events_share_correlation_id():
     }
 
     assert len(correlation_ids) == 1
+
+def test_create_task_is_idempotent():
+    create_task("t1")
+    create_task("t1")  # different idempotency key
+
+    events = load_events("t1")
+    assert len(events) == 1
+    assert events[0]["event_type"] == "TaskCreated"
