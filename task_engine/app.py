@@ -2,11 +2,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
-from task_engine.db import init_db, rehydrate_task, append_event, load_events, project_task, get_connection
+from task_engine.db import init_db, rehydrate_task, append_event, load_events, project_task, get_connection, find_event_by_idempotency_key
 from contextlib import asynccontextmanager
 from task_engine.capability_resolver import resolve_capabilities
 from task_engine.auth import ACTION_CAPABILITIES
 from task_engine.domain import Task
+import uuid
 
 
 # data model
@@ -55,6 +56,7 @@ ACTION_PERMISSIONS = {
 class TaskActionRequest(BaseModel):
     requested_action: str
     actor_id: str
+    idempotency_key: str
 
 class TaskActionResponse(BaseModel):
     task_id: str
@@ -109,6 +111,21 @@ def create_task(task_id: str):
 
 @app.post("/tasks/{task_id}/actions",response_model=TaskActionResponse)
 def apply_task_action(task_id: str, action: TaskActionRequest):
+    correlation_id = str(uuid.uuid4())
+    existing = find_event_by_idempotency_key(action.idempotency_key)
+    if existing:
+    # Command already processed — return current truth
+        task, _ = rehydrate_task(task_id)
+
+        return TaskActionResponse(
+        task_id=task.id,
+        current_state=task.state,
+        state_changed_at=task.state_changed_at,
+        is_immutable=(task.state == "ARCHIVED"),
+        next_allowed_actions=list(
+            STATE_TRANSITIONS.get(task.state, {}).keys()
+        )
+    )
     # 1. Rehydrate from events (SOURCE OF TRUTH)
     task, version = rehydrate_task(task_id)
     if not task:
@@ -134,7 +151,9 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
             },
             metadata={
                 "actor_id": action.actor_id
-                }
+                },
+                idempotency_key=action.idempotency_key,
+                correlation_id=correlation_id
             )
             events = load_events(task_id)
             project_task(task_id, events)
@@ -155,7 +174,9 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
             },
             metadata={
                 "actor_id": action.actor_id
-            }
+            },
+            idempotency_key=action.idempotency_key,
+            correlation_id=correlation_id
         )
         events = load_events(task_id)
         project_task(task_id, events)
@@ -175,7 +196,9 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
         metadata={
             "actor_id": action.actor_id,
             "action": action.requested_action
-        }
+        },
+        idempotency_key=action.idempotency_key,
+        correlation_id=correlation_id
     )
     events = load_events(task_id)
     project_task(task_id, events)

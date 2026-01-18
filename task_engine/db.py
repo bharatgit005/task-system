@@ -19,10 +19,13 @@ CREATE TABLE IF NOT EXISTS events (
     event_type TEXT NOT NULL,
     event_payload TEXT NOT NULL,
     event_metadata TEXT NOT NULL,
-
+    idempotency_key TEXT,
+    correlation_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
+    
 
     UNIQUE(stream_id, stream_version)
+    UNIQUE(idempotency_key)
 );
 """
 TASK_PROJECTION_SQL = """
@@ -76,6 +79,19 @@ def project_task(task_id: str, events: list[dict]):
     conn.commit()
     conn.close()
 
+def find_event_by_idempotency_key(key: str):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM events where idempotency_key = ?",
+        (key,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+    return row
+
 def rehydrate_task(task_id: str):
     events = load_events(task_id)
 
@@ -97,7 +113,8 @@ def load_events(task_id: str):
 
     cur.execute(
         """
-        SELECT event_type, event_payload, event_metadata, stream_version
+        SELECT event_type, event_payload, event_metadata, stream_version, correlation_id,
+        idempotency_key
         FROM events
         WHERE stream_id = ?
         ORDER BY stream_version ASC
@@ -114,6 +131,8 @@ def load_events(task_id: str):
             "payload": json.loads(row["event_payload"]),
             "metadata": json.loads(row["event_metadata"]),
             "version": row["stream_version"],
+            "correlation_id": row["correlation_id"],
+            "idempotency_key": row["idempotency_key"],
         }
         for row in rows
     ]
@@ -129,7 +148,9 @@ def append_event(
     expected_version: int,
     event_type: str,
     payload: dict,
-    metadata: dict
+    metadata: dict,
+    idempotency_key: str | None,
+    correlation_id: str
 ) -> int:
     conn = get_connection()
     try:
@@ -159,9 +180,11 @@ def append_event(
                 event_type,
                 event_payload,
                 event_metadata,
+                idempotency_key,
+                correlation_id,
                 occurred_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 stream_id,
@@ -170,6 +193,8 @@ def append_event(
                 event_type,
                 json.dumps(payload),
                 json.dumps(metadata),
+                idempotency_key,
+                correlation_id,
                 datetime.now()
             )
         )
