@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
-from task_engine.db import init_db, save_task, rehydrate_task, append_event, load_events
+from task_engine.db import init_db, rehydrate_task, append_event, load_events, project_task, get_connection
 from contextlib import asynccontextmanager
 from task_engine.capability_resolver import resolve_capabilities
 from task_engine.auth import ACTION_CAPABILITIES
@@ -96,6 +96,8 @@ def create_task(task_id: str):
             "actor": "system"
         }
     )
+    events = load_events(task_id)
+    project_task(task_id, events)
    # Rehydrate to derive state
     task, _ = rehydrate_task(task_id)
 
@@ -134,6 +136,8 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
                 "actor_id": action.actor_id
                 }
             )
+            events = load_events(task_id)
+            project_task(task_id, events)
             raise HTTPException(status_code=403, detail="actor lack of required capability")
     
     #lifecycle logic
@@ -153,6 +157,8 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
                 "actor_id": action.actor_id
             }
         )
+        events = load_events(task_id)
+        project_task(task_id, events)
         raise HTTPException(status_code=400, detail=f"Action {action.requested_action} not allowed from state {current_state}")
     
     new_state = allowed_actions[action.requested_action]
@@ -171,6 +177,8 @@ def apply_task_action(task_id: str, action: TaskActionRequest):
             "action": action.requested_action
         }
     )
+    events = load_events(task_id)
+    project_task(task_id, events)
     # 5. Rehydrate again to derive new state
     task, _ = rehydrate_task(task_id)
 
@@ -213,3 +221,21 @@ def get_task_events(task_id: str):
         "task_id": task_id,
         "events": events
     }
+
+@app.get("/tasks/{task_id}/projection")
+def get_task_projection(task_id: str):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT * FROM task_projection WHERE task_id = ?",
+        (task_id,)
+    )
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="projection not found")
+
+    return dict(row)

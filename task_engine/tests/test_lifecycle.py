@@ -1,10 +1,10 @@
-from task_engine.app import apply_task_action, TaskActionRequest
+from task_engine.app import apply_task_action, TaskActionRequest, get_task_projection
 from task_engine.domain import Task
 import pytest
 from fastapi import HTTPException
 import os
 from task_engine.db import DB_PATH
-from task_engine.db import init_db, append_event, load_events
+from task_engine.db import init_db, append_event, load_events, get_connection, project_task
 from task_engine import db
 from datetime import datetime
 
@@ -81,3 +81,43 @@ def test_unknown_action_is_rejected():
                 actor_id="system"
             )
         )
+
+def test_projection_can_be_rebuilt_from_events(isolated_db):
+    # Arrange
+    create_task("p1")
+    apply_task_action("p1", TaskActionRequest(requested_action="submit_for_review", actor_id="USER"))
+    apply_task_action("p1", TaskActionRequest(requested_action="start_progress", actor_id="USER"))
+
+    # Sanity: projection exists
+    proj = get_task_projection("p1")
+    assert proj["current_state"] == "IN_PROGRESS"
+
+    # Act: destroy projection
+    conn = get_connection()
+    conn.execute("DELETE FROM task_projection")
+    conn.commit()
+    conn.close()
+
+    # Rebuild
+    events = load_events("p1")
+    project_task("p1", events)
+
+    # Assert
+    rebuilt = get_task_projection("p1")
+    assert rebuilt["current_state"] == "IN_PROGRESS"
+    assert rebuilt["version"] == len(events)
+
+def test_commands_do_not_depend_on_projection(isolated_db):
+    create_task("p2")
+
+    # Corrupt / remove projection
+    conn = get_connection()
+    conn.execute("DELETE FROM task_projection")
+    conn.commit()
+    conn.close()
+
+    # Command must still work
+    apply_task_action("p2", TaskActionRequest(requested_action="submit_for_review", actor_id="USER"))
+
+    events = load_events("p2")
+    assert events[-1]["event_type"] == "TaskTransitioned"

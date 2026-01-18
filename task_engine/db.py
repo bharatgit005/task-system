@@ -25,7 +25,14 @@ CREATE TABLE IF NOT EXISTS events (
     UNIQUE(stream_id, stream_version)
 );
 """
-
+TASK_PROJECTION_SQL = """
+CREATE TABLE IF NOT EXISTS task_projection (
+    task_id TEXT PRIMARY KEY,
+    current_state TEXT NOT NULL,
+    state_changed_at TEXT NOT NULL,
+    version INTEGER NOT NULL
+);
+"""
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -34,45 +41,40 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
-
-    cur.execute("""
-
-        CREATE TABLE IF NOT EXISTS tasks (
-            task_id TEXT PRIMARY KEY,
-            state TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            state_changed_at TEXT NOT NULL
-        ) 
-
-    """)
     
      # Event store (source of truth)
     cur.execute(EVENTS_TABLE_SQL)
-
+    cur.execute(TASK_PROJECTION_SQL)
     conn.commit()
     conn.close()
-# IMPORTANT:
-# `tasks` is a derived projection.
-# It must NEVER be the source of truth.
-# All lifecycle decisions must come from events.
-def save_task(task):
+
+
+
+def project_task(task_id: str, events: list[dict]):
+    task = Task(task_id)
+
+    for event in events:
+        task.apply(event)
+
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute("""
-        INSERT OR REPLACE INTO tasks
-        (task_id, state, created_at, state_changed_at)
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO task_projection
+        (task_id, current_state, state_changed_at, version)
         VALUES (?, ?, ?, ?)
-    """, (
-        task.id,
-        task.state,
-        task.created_at.isoformat(),
-        task.state_changed_at.isoformat()
-    ))
+        """,
+        (
+            task.id,
+            task.state,
+            task.state_changed_at.isoformat(),
+            task.version
+        )
+    )
 
     conn.commit()
     conn.close()
-
 
 def rehydrate_task(task_id: str):
     events = load_events(task_id)
@@ -87,29 +89,7 @@ def rehydrate_task(task_id: str):
 
     return task, task.version
 
-def load_task(task_id):
-    conn = get_connection()
-    cur = conn.cursor()
 
-    cur.execute(
-        "SELECT * FROM tasks WHERE task_id = ?",
-        (task_id,)
-    )
-
-    row = cur.fetchone()
-    conn.close()
-
-    if not row:
-        return None
-
-    from task_engine.app import Task
-
-    task = Task(row["task_id"])
-    task.state = row["state"]
-    task.created_at = datetime.fromisoformat(row["created_at"])
-    task.state_changed_at = datetime.fromisoformat(row["state_changed_at"])
-
-    return task
 
 def load_events(task_id: str):
     conn = get_connection()
