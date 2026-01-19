@@ -1,4 +1,5 @@
-from task_engine.app import apply_task_action, TaskActionRequest, get_task_projection, CreateTaskRequest, create_task as create_task_endpoint
+from task_engine.app import apply_task_action, get_task_projection, create_task as create_task_endpoint
+from task_engine.contracts import CreateTaskRequest, TaskActionRequest
 from task_engine.domain import Task
 import pytest
 from fastapi import HTTPException

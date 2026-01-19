@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from task_engine.capability_resolver import resolve_capabilities
 from task_engine.auth import ACTION_CAPABILITIES
 from task_engine.domain import Task
+from task_engine.contracts import CreateTaskRequest, TaskActionRequest
 import uuid
 
 
@@ -53,11 +54,6 @@ ACTION_PERMISSIONS = {
 }
 #API contracts
 
-class TaskActionRequest(BaseModel):
-    requested_action: str
-    actor_id: str
-    idempotency_key: str
-
 class TaskActionResponse(BaseModel):
     task_id: str
     current_state: str
@@ -79,12 +75,29 @@ app.add_middleware(
 #END points
 
 @app.post("/tasks/{task_id}")
-def create_task(task_id: str):
-    task, _ = rehydrate_task(task_id) 
-    if task:
-        raise HTTPException(status_code=400, detail="task already exists")
+def create_task(task_id: str, req: CreateTaskRequest):
 
+    # 1. If task already exists, return it (idempotent create)
+    task, version = rehydrate_task(task_id)
+    if task:
+        return {
+            "task_id": task.id,
+            "state": task.state
+        }
+
+    # 2. Idempotency-key short-circuit (same request retried)
+    existing = find_event_by_idempotency_key(req.idempotency_key)
+    if existing:
+        task, _ = rehydrate_task(task_id)
+        return {
+            "task_id": task.id,
+            "state": task.state
+        }
+
+    # 3. Emit creation event
     now = datetime.utcnow().isoformat()
+    correlation_id = str(uuid.uuid4())
+
     append_event(
         stream_id=task_id,
         stream_type="TASK",
@@ -96,17 +109,15 @@ def create_task(task_id: str):
         },
         metadata={
             "actor": "system"
-        }
+        },
+        idempotency_key=req.idempotency_key,
+        correlation_id=correlation_id
     )
-    events = load_events(task_id)
-    project_task(task_id, events)
-   # Rehydrate to derive state
+
     task, _ = rehydrate_task(task_id)
-
-    return{
-        "task_id": task_id,
+    return {
+        "task_id": task.id,
         "state": task.state
-
     }
 
 @app.post("/tasks/{task_id}/actions",response_model=TaskActionResponse)
